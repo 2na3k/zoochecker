@@ -1,11 +1,4 @@
-from ._base import (
-    KVCachePool,
-    KVCacheStats,
-    KVPrefix,
-    PrefixCache,
-    PrefixMatch,
-    RequestKVCache,
-)
+from ._base import KVCachePool, KVCacheStats, KVPrefix, RequestKVCache
 from .cache_manager import CacheFactory, CacheManager, UnifiedCacheManager
 
 __all__ = [
@@ -14,8 +7,6 @@ __all__ = [
     "KVCachePool",
     "KVCacheStats",
     "KVPrefix",
-    "PrefixCache",
-    "PrefixMatch",
     "RequestKVCache",
     "UnifiedCacheManager",
 ]

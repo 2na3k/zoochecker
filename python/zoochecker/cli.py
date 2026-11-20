@@ -1,8 +1,6 @@
 import argparse
 
-import uvicorn
-
-from zoochecker.https_server import create_app
+from zoochecker.api.v1.service import run_server
 from zoochecker.server_args import ServerArgs
 
 
@@ -18,6 +16,7 @@ def main() -> None:
     parser.add_argument("--cache-max-tokens", type=int)
     parser.add_argument("--cache-block-tokens", type=int)
     parser.add_argument("--prefill-step-size", type=int)
+    parser.add_argument("--scheduler-batch-wait-seconds", type=float)
     parser.add_argument("--max-new-tokens", type=int)
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
@@ -32,7 +31,7 @@ def main() -> None:
     parser.add_argument("--telemetry-memory-poll-interval", type=float)
     parser.add_argument("--telemetry-json-log")
     args = ServerArgs(**vars(parser.parse_args()))
-    uvicorn.run(create_app(args), host=args.host, port=args.port)
+    run_server(args)
 
 
 if __name__ == "__main__":

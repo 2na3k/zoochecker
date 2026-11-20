@@ -2,40 +2,30 @@ import asyncio
 import base64
 import binascii
 import ipaddress
+from copy import deepcopy
 import socket
 from collections.abc import Callable
 from io import BytesIO
-from typing import Literal
 
 import httpx
 from PIL import Image, ImageOps
-from pydantic import BaseModel, Field
 
 from zoochecker.server_args import ServerArgs
-from zoochecker.types import InvalidPrompt
+from zoochecker.types import ChatMessage, ImagePart, ImageURL, InvalidPrompt
 
 ImageSize = Callable[[int, int], tuple[int, int]]
 
 
-class ImageURL(BaseModel):
-    url: str = Field(min_length=1)
-    detail: Literal["auto", "low", "high"] = "auto"
-
-
-class ImagePart(BaseModel):
-    type: Literal["image_url"]
-    image_url: ImageURL
-
-
 async def prepare_chat_images(
-    messages: list[dict], resize: ImageSize, args: ServerArgs
-) -> list[dict]:
+    messages: list[ChatMessage], resize: ImageSize, args: ServerArgs
+) -> list[ChatMessage]:
+    messages = deepcopy(messages)
     sources = [
-        part["image_url"]
+        part.image_url
         for message in messages
-        if isinstance(message["content"], list)
-        for part in message["content"]
-        if part["type"] == "image_url"
+        if isinstance(message.content, list)
+        for part in message.content
+        if isinstance(part, ImagePart)
     ]
     if not sources:
         return messages
@@ -47,11 +37,13 @@ async def prepare_chat_images(
     return messages
 
 
-def _prepare_images(sources: list[dict], resize: ImageSize, args: ServerArgs) -> None:
+def _prepare_images(
+    sources: list[ImageURL], resize: ImageSize, args: ServerArgs
+) -> None:
     with httpx.Client(trust_env=False, timeout=args.image_timeout_seconds) as client:
         for source in sources:
             try:
-                url = source["url"]
+                url = source.url
                 if url.startswith("data:"):
                     media, _, encoded = url.partition(",")
                     if not media.startswith("data:image/") or not media.endswith(
@@ -74,7 +66,7 @@ def _prepare_images(sources: list[dict], resize: ImageSize, args: ServerArgs) ->
                     oriented = oriented.resize(size, Image.Resampling.BICUBIC)
                 buffer = BytesIO()
                 oriented.save(buffer, format="PNG")
-                source["url"] = "data:image/png;base64," + base64.b64encode(
+                source.url = "data:image/png;base64," + base64.b64encode(
                     buffer.getvalue()
                 ).decode("ascii")
             except InvalidPrompt:

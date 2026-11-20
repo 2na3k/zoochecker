@@ -212,7 +212,7 @@ class CacheBackendTests(unittest.TestCase):
             with self.subTest(pool_type=pool_type):
                 mx.synchronize()
                 before_pool = mx.get_active_memory()
-                args = ServerArgs("test", None, cache_pool_type=pool_type, cache_max_tokens=512)
+                args = ServerArgs("test", None, cache_pool_type=pool_type, cache_max_tokens=512, cache_slots=1)
                 manager = UnifiedCacheManager(args, num_layers=1, num_kv_heads=4, head_dim=64)
                 snapshots = []
                 try:

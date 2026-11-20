@@ -16,7 +16,7 @@ from mlx_lm.generate import generate_step
 from PIL import Image
 
 from zoochecker.cache import UnifiedCacheManager
-from zoochecker.https_server import create_app
+from zoochecker.api.v1.service import create_app
 from zoochecker.models.qwen35 import Qwen35
 from zoochecker.server_args import ServerArgs
 from zoochecker.tokenizer import Tokenizer
@@ -53,11 +53,11 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
         async def inspect_image(tokenizer, request, emit=None):
             if isinstance(request.prompt, list):
                 for message in request.prompt:
-                    if isinstance(message["content"], str):
+                    if isinstance(message.content, str):
                         continue
-                    for part in message["content"]:
-                        if part["type"] == "image_url":
-                            data = part["image_url"]["url"].split(",", 1)[1]
+                    for part in message.content:
+                        if part.type == "image_url":
+                            data = part.image_url.url.split(",", 1)[1]
                             with Image.open(BytesIO(base64.b64decode(data))) as image:
                                 received_sizes.append(image.size)
             return await process(tokenizer, request, emit)
@@ -161,6 +161,9 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frames.pop(), "[DONE]")
         chunks = [json.loads(frame) for frame in frames]
         self.assertEqual(chunks[-1]["usage"], result["usage"])
+        terminal = [chunk for chunk in chunks if "output_token_ids" in chunk]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(terminal[0]["output_token_ids"], result["output_token_ids"])
         self.assertEqual(len({chunk["id"] for chunk in chunks}), 1)
         choices = [chunk["choices"][0] for chunk in chunks if chunk["choices"]]
         final = result["choices"][0]
@@ -252,7 +255,7 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
                     break
                 reference.append(token)
             baseline.append(
-                (self.codec.decode(reference, skip_special_tokens=True), len(reference))
+                (self.codec.decode(reference, skip_special_tokens=True), reference)
             )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -285,7 +288,7 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
                         )
                         self.assertEqual(oversized.status_code, 400)
                         terminal_status = {}
-                        for (route, body, prompt_ids, _), (expected, count) in zip(
+                        for (route, body, prompt_ids, _), (expected, output_ids) in zip(
                             routes, baseline, strict=True
                         ):
                             response = await client.post(
@@ -307,12 +310,13 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
                             )
                             self.assertTrue(text.strip())
                             self.assertEqual(text, expected)
+                            self.assertEqual(completion["output_token_ids"], output_ids)
                             self.assertEqual(
                                 completion["usage"],
                                 {
                                     "prompt_tokens": len(prompt_ids),
-                                    "completion_tokens": count,
-                                    "total_tokens": len(prompt_ids) + count,
+                                    "completion_tokens": len(output_ids),
+                                    "total_tokens": len(prompt_ids) + len(output_ids),
                                 },
                             )
                         stats = (await client.get("/v1/stats")).json()
@@ -324,7 +328,7 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
                         )
                         self.assertEqual(
                             throughput["completion_tokens_total"],
-                            sum(count for _, count in baseline),
+                            sum(len(output_ids) for _, output_ids in baseline),
                         )
                         self.assertGreater(throughput["step_loop_iterations_total"], 0)
                         self.assertGreater(stats["latency_p50_ttft_seconds"], 0)
@@ -356,7 +360,7 @@ class Qwen35E2ETests(unittest.IsolatedAsyncioTestCase):
                             }
                             <= event_types
                         )
-                        metrics = await client.get("/metrics")
+                        metrics = await client.get("/v1/metrics")
                         metrics.raise_for_status()
                         self.assertIn(
                             'zoochecker_ttft_seconds_count{model="qwen-test"} 2.0',

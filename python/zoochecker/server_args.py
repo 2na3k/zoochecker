@@ -11,12 +11,13 @@ class ServerArgs:
     # cache configuration
     cache_dtype: str = "bfloat16"
     cache_pool_type: str = "mlx_kv"
-    cache_slots: int = 1
+    cache_slots: int = 2
     cache_max_tokens: int = 2048
     cache_block_tokens: int = 16
     cache_decode_partition_tokens: int = 64
 
     prefill_step_size: int = 512
+    scheduler_batch_wait_seconds: float = 0.002
     max_new_tokens: int = 256
     temperature: float = 0.0
     top_p: float = 1.0

@@ -1,6 +1,4 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 import mlx.core as mx
@@ -76,26 +74,4 @@ class KVCachePool(ABC):
 
     @abstractmethod
     def release(self, slot: int, lease: RequestKVCache) -> None:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True, slots=True)
-class PrefixMatch:
-    prefix_len: int
-    state: KVPrefix
-
-
-class PrefixCache(ABC):
-    @abstractmethod
-    def match(
-        self, token_ids: Sequence[int]
-    ) -> AbstractContextManager[PrefixMatch | None]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def insert(self, token_ids: Sequence[int], state: KVPrefix) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def clear(self) -> None:
         raise NotImplementedError

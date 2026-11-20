@@ -13,6 +13,7 @@ dependencies = [
     "mlx>=0.32.4",
     "mlx-lm>=0.32.2",
     "mlx-vlm>=0.8.0",
+    "openai>=2,<3",
     "pillow>=13.0.0",
     "prometheus-client",
     "pyzmq>=27.3.0",

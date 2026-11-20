@@ -9,11 +9,11 @@ import mlx.core as mx
 
 from draft.vanilla_mlx_kv_cache import VanillaAttention
 from zoochecker.cache import UnifiedCacheManager
-from zoochecker.https_server import create_app
+from zoochecker.api.v1.service import create_app
 from zoochecker.ipc_connector import WorkerClient, serve_worker
 from zoochecker.scheduler import Scheduler
 from zoochecker.server_args import ServerArgs
-from zoochecker.types import GeneratedTokens, OutputDelta, TokenizedRequest
+from zoochecker.types import GeneratedTokens, OutputDelta, Sampling, TokenizedRequest
 from zoochecker.worker.runner import WorkerService
 
 
@@ -39,14 +39,14 @@ class KVCacheE2ETests(unittest.IsolatedAsyncioTestCase):
             admitted.put_nowait((request, cache))
             await block_handler.wait()
 
-        args = ServerArgs("vanilla", None, cache_max_tokens=3)
+        args = ServerArgs("vanilla", None, cache_max_tokens=3, cache_slots=1)
         manager = UnifiedCacheManager(args, num_layers=2, num_kv_heads=4, head_dim=16)
         with closing(manager), tempfile.TemporaryDirectory() as temp_dir:
             endpoint = Path(temp_dir) / "worker.sock"
             service = WorkerService(manager, handle)
             async with serve_worker(endpoint, service.run):
-                with closing(WorkerClient(endpoint)) as client:
-                    scheduler = Scheduler(client.run)
+                async with WorkerClient(endpoint) as client:
+                    scheduler = Scheduler(client, capacity=args.cache_slots)
                     async with scheduler.running():
                         active = asyncio.create_task(
                             scheduler.run(TokenizedRequest("active", (1, 2, 3)))
@@ -80,18 +80,18 @@ class KVCacheE2ETests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.Future()
             return GeneratedTokens((43,), "length")
 
-        args = ServerArgs("vanilla", None, cache_max_tokens=3)
+        args = ServerArgs("vanilla", None, cache_max_tokens=3, cache_slots=1)
         manager = UnifiedCacheManager(args, num_layers=2, num_kv_heads=4, head_dim=16)
         with closing(manager), tempfile.TemporaryDirectory() as temp_dir:
             endpoint = Path(temp_dir) / "worker.sock"
             service = WorkerService(manager, handle)
             async with serve_worker(endpoint, service.run), asyncio.timeout(5):
-                with closing(WorkerClient(endpoint)) as client:
-                    scheduler = Scheduler(client.run)
+                async with WorkerClient(endpoint) as client:
+                    scheduler = Scheduler(client, capacity=args.cache_slots)
                     async with scheduler.running():
                         output = asyncio.Queue()
                         active = asyncio.create_task(
-                            scheduler.run(TokenizedRequest("stream", (1,)), output.put)
+                            scheduler.run(TokenizedRequest("stream", (1,), Sampling(1, 0, 1)), output.put)
                         )
                         self.assertEqual(
                             await output.get(), OutputDelta("stream", "", 42, prompt_tokens=1, completion_tokens=1)
@@ -99,13 +99,13 @@ class KVCacheE2ETests(unittest.IsolatedAsyncioTestCase):
                         active.cancel()
                         with self.assertRaises(asyncio.CancelledError):
                             await active
-                        result = await scheduler.run(TokenizedRequest("next", (2,)), output.put)
+                        result = await scheduler.run(TokenizedRequest("next", (2,), Sampling(1, 0, 1)), output.put)
                         self.assertEqual(result, GeneratedTokens((43,), "length"))
                         self.assertEqual(
                             await output.get(), OutputDelta("next", "", 43, prompt_tokens=1, completion_tokens=1)
                         )
                         self.assertEqual(
-                            await output.get(), OutputDelta("next", "", -1, "length", 1, 1)
+                            await output.get(), OutputDelta("next", "", -1, "length", 1, 1, (43,))
                         )
                         self.assertEqual(manager.stats().slots_used, 0)
 
@@ -145,7 +145,7 @@ class KVCacheE2ETests(unittest.IsolatedAsyncioTestCase):
                     )
                     await prefilled.wait()
                     try:
-                        self.assertEqual((await client.get("/health")).json(), {"status": "ok"})
+                        self.assertEqual((await client.get("/v1/health")).json(), {"status": "ok"})
                         stats = (await client.get("/v1/stats")).json()
                         self.assertEqual(stats["active_requests"], 1)
                         self.assertEqual(stats["scheduler"], {"waiting_seqs": 0, "running_seqs": 1})
@@ -164,6 +164,61 @@ class KVCacheE2ETests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(seen, [(response.json()["request_id"], (1, 2, 3), 3)])
 
+    async def test_concurrent_requests_batch_then_reuse_a_free_slot(self):
+        started = asyncio.Queue()
+        release = {token: asyncio.Event() for token in (1, 2, 3)}
+
+        async def prefill(request, cache):
+            token, = request.token_ids
+            self.assertEqual(cache.offset(0), 0)
+            mx.eval(self.model(mx.array([[token]]), cache))
+            started.put_nowait((token, request.request_id))
+            await release[token].wait()
+
+        args = ServerArgs(
+            "vanilla", None, cache_slots=2, cache_max_tokens=3,
+            scheduler_batch_wait_seconds=0.05,
+        )
+        app = create_app(
+            args, num_layers=2, num_kv_heads=4, head_dim=16,
+            encode=lambda prompt: [int(prompt)], prefill=prefill,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+            asyncio.timeout(5),
+        ):
+            requests = {
+                token: asyncio.create_task(client.post("/v1/prefill", json={"prompt": str(token)}))
+                for token in (1, 2, 3)
+            }
+            try:
+                first, first_id = await started.get()
+                second, second_id = await started.get()
+                stats = (await client.get("/v1/stats")).json()
+                self.assertEqual(stats["scheduler"], {"waiting_seqs": 1, "running_seqs": 2})
+                self.assertEqual(stats["kvcache_text"]["slots_used"], 2)
+
+                release[first].set()
+                self.assertEqual((await requests[first]).json()["request_id"], first_id)
+                third, third_id = await started.get()
+                self.assertFalse(requests[second].done())
+                release[second].set()
+                release[third].set()
+                self.assertEqual((await requests[second]).json()["request_id"], second_id)
+                self.assertEqual((await requests[third]).json()["request_id"], third_id)
+
+                events = (await client.get("/v1/events")).json()
+                sizes = {
+                    event["request_id"]: event["batch_size"]
+                    for event in events if event["event_type"] == "request_dispatched"
+                }
+                self.assertEqual(sizes, {first_id: 2, second_id: 2, third_id: 1})
+            finally:
+                for event in release.values():
+                    event.set()
+                await asyncio.gather(*requests.values(), return_exceptions=True)
+
     async def test_health_stays_available_with_telemetry_disabled(self):
         async def prefill(request, cache):
             return None
@@ -178,12 +233,13 @@ class KVCacheE2ETests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            self.assertEqual((await client.get("/health")).status_code, 503)
+            self.assertEqual((await client.get("/v1/health")).status_code, 503)
             async with app.router.lifespan_context(app):
+                self.assertEqual((await client.get("/v1/health")).status_code, 200)
                 self.assertEqual((await client.get("/health")).status_code, 200)
-                for route in ("/metrics", "/v1/stats", "/v1/events"):
+                for route in ("/v1/metrics", "/v1/stats", "/v1/events"):
                     self.assertEqual((await client.get(route)).status_code, 503)
-            self.assertEqual((await client.get("/health")).status_code, 503)
+            self.assertEqual((await client.get("/v1/health")).status_code, 503)
 
     async def test_prefill_then_decode_at_exact_capacity(self):
         app = self.app()

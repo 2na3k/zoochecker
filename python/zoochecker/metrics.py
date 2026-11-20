@@ -5,7 +5,7 @@ import sys
 from collections import Counter, deque
 from collections.abc import AsyncIterator, Iterator
 from contextlib import ExitStack, asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from math import isfinite
 from time import monotonic, time
 from typing import TextIO
@@ -16,7 +16,14 @@ from prometheus_client import Counter as PrometheusCounter
 
 from zoochecker.cache import KVCacheStats
 from zoochecker.server_args import ServerArgs
-from zoochecker.types import InvalidPrompt
+from zoochecker.types import (
+    CacheStats,
+    InvalidPrompt,
+    MLXMemoryStats,
+    SchedulerStats,
+    StatsResponse,
+    ThroughputStats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -274,59 +281,91 @@ class Metrics:
     def recent_events(self, limit: int) -> list[dict]:
         return list(self._events)[-limit:] if limit else []
 
-    def snapshot(self, waiting: int, running: int, cache: KVCacheStats) -> dict:
-        latencies = {}
-        for name, samples in self._samples.items():
-            ordered = sorted(samples)
-            for percentile in (50, 99):
-                latencies[f"latency_p{percentile}_{name}_seconds"] = (
-                    ordered[min(len(ordered) * percentile // 100, len(ordered) - 1)]
-                    if ordered
-                    else None
-                )
-        return {
-            "timestamp": time(),
-            "uptime_seconds": monotonic() - self._started,
-            "model": self._args.model_name,
-            "active_requests": len(self._spans),
-            "scheduler": {"waiting_seqs": waiting, "running_seqs": running},
-            "kvcache_text": {
-                **asdict(cache),
-                "blocks_free": cache.blocks_total - cache.blocks_used,
-                "utilisation_ratio": cache.blocks_used / cache.blocks_total,
-            },
-            "throughput": {
-                name: self._totals[name]
-                for name in (
-                    "requests_total",
-                    "prompt_tokens_total",
-                    "completion_tokens_total",
-                    "step_loop_iterations_total",
-                )
-            },
-            **latencies,
-            "mlx_memory": dict(self._memory),
-            "http_requests_total": self._totals["http_requests_total"],
-            "errors_total": self._totals["errors_total"],
-            "telemetry_dropped_events_total": self._totals[
+    def snapshot(
+        self,
+        waiting: int,
+        running: int,
+        cache: KVCacheStats,
+        *,
+        ready: bool,
+    ) -> StatsResponse:
+        def percentiles(name: str) -> tuple[float | None, float | None]:
+            ordered = sorted(self._samples[name])
+            if not ordered:
+                return None, None
+            size = len(ordered)
+            return ordered[size * 50 // 100], ordered[min(size * 99 // 100, size - 1)]
+
+        total_p50, total_p99 = percentiles("total")
+        ttft_p50, ttft_p99 = percentiles("ttft")
+        tpot_p50, tpot_p99 = percentiles("tpot")
+        prefill_p50, prefill_p99 = percentiles("prefill")
+        decode_p50, decode_p99 = percentiles("decode_step")
+        queue_p50, queue_p99 = percentiles("queue_wait")
+        return StatsResponse(
+            status="ok" if ready else "unavailable",
+            timestamp=time(),
+            uptime_seconds=monotonic() - self._started,
+            model=self._args.model_name,
+            active_requests=len(self._spans),
+            scheduler=SchedulerStats(waiting_seqs=waiting, running_seqs=running),
+            kvcache_text=CacheStats(
+                slots_total=cache.slots_total,
+                slots_used=cache.slots_used,
+                blocks_total=cache.blocks_total,
+                blocks_used=cache.blocks_used,
+                blocks_free=cache.blocks_total - cache.blocks_used,
+                block_tokens=cache.block_tokens,
+                bytes_total=cache.bytes_total,
+                bytes_used=cache.bytes_used,
+                utilisation_ratio=cache.blocks_used / cache.blocks_total,
+            ),
+            throughput=ThroughputStats(
+                requests_total=self._totals["requests_total"],
+                prompt_tokens_total=self._totals["prompt_tokens_total"],
+                completion_tokens_total=self._totals["completion_tokens_total"],
+                step_loop_iterations_total=self._totals["step_loop_iterations_total"],
+            ),
+            latency_p50_total_seconds=total_p50,
+            latency_p99_total_seconds=total_p99,
+            latency_p50_ttft_seconds=ttft_p50,
+            latency_p99_ttft_seconds=ttft_p99,
+            latency_p50_tpot_seconds=tpot_p50,
+            latency_p99_tpot_seconds=tpot_p99,
+            latency_p50_prefill_seconds=prefill_p50,
+            latency_p99_prefill_seconds=prefill_p99,
+            latency_p50_decode_step_seconds=decode_p50,
+            latency_p99_decode_step_seconds=decode_p99,
+            latency_p50_queue_wait_seconds=queue_p50,
+            latency_p99_queue_wait_seconds=queue_p99,
+            mlx_memory=MLXMemoryStats(**self._memory),
+            http_requests_total=self._totals["http_requests_total"],
+            errors_total=self._totals["errors_total"],
+            telemetry_dropped_events_total=self._totals[
                 "telemetry_dropped_events_total"
             ],
-        }
+        )
 
-    def prometheus(self, snapshot: dict) -> bytes:
-        gauges = {"active_requests": snapshot["active_requests"]}
-        gauges.update(
-            (f"scheduler_{name}", value)
-            for name, value in snapshot["scheduler"].items()
-        )
-        gauges.update(
-            (f"kvcache_{name}", value)
-            for name, value in snapshot["kvcache_text"].items()
-            if name != "block_tokens"
-        )
-        gauges.update(
-            (f"mlx_{name}", value) for name, value in snapshot["mlx_memory"].items()
-        )
+    def prometheus(self, snapshot: StatsResponse) -> bytes:
+        scheduler = snapshot.scheduler
+        cache = snapshot.kvcache_text
+        memory = snapshot.mlx_memory
+        gauges = {
+            "active_requests": snapshot.active_requests,
+            "scheduler_waiting_seqs": scheduler.waiting_seqs,
+            "scheduler_running_seqs": scheduler.running_seqs,
+            "kvcache_slots_total": cache.slots_total,
+            "kvcache_slots_used": cache.slots_used,
+            "kvcache_blocks_total": cache.blocks_total,
+            "kvcache_blocks_used": cache.blocks_used,
+            "kvcache_blocks_free": cache.blocks_free,
+            "kvcache_utilisation_ratio": cache.utilisation_ratio,
+            "kvcache_bytes_total": cache.bytes_total,
+            "kvcache_bytes_used": cache.bytes_used,
+            "mlx_active_bytes": memory.active_bytes,
+            "mlx_cache_bytes": memory.cache_bytes,
+            "mlx_peak_bytes": memory.peak_bytes,
+        }
         for name, value in gauges.items():
             self._gauges[name].labels(model=self._args.model_name).set(value)
         return generate_latest(self._registry)

@@ -58,6 +58,7 @@ class WorkerService:
                     if result.prompt_tokens is not None
                     else len(request.token_ids),
                     completion_tokens=len(result.token_ids),
+                    output_token_ids=result.token_ids,
                 )
             )
         return result
