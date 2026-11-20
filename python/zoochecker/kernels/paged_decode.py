@@ -17,26 +17,31 @@ _PARTIAL = r"""
 
     float peak = -INFINITY;
     float total = 0.0f;
-    for (uint token = begin; token < end; ++token) {
+    for (uint token = begin; token < end;) {
         const uint page = uint(table[token / PAGE_TOKENS]);
+        const uint page_end = min(end, (token / PAGE_TOKENS + 1) * PAGE_TOKENS);
         if (page >= PHYSICAL_PAGES) {
+            token = page_end;
             continue;
         }
-        const uint physical_token = page * PAGE_TOKENS + token % PAGE_TOKENS;
-        const uint base = (kv_head * PHYSICAL_PAGES * PAGE_TOKENS + physical_token) * HEAD_DIM;
-        float score = 0.0f;
-        for (uint i = 0; i < HEAD_DIM / 32; ++i) {
-            score += q[i] * float(keys[base + lane + i * 32]);
-        }
-        score = simd_sum(score) * scale[0];
-        const float next_peak = max(peak, score);
-        const float previous = fast::exp(peak - next_peak);
-        const float current = fast::exp(score - next_peak);
-        total = fma(total, previous, current);
-        peak = next_peak;
-        for (uint i = 0; i < HEAD_DIM / 32; ++i) {
-            weighted[i] = fma(current, float(values[base + lane + i * 32]),
-                              weighted[i] * previous);
+        uint base = ((kv_head * PHYSICAL_PAGES + page) * PAGE_TOKENS + token % PAGE_TOKENS) * HEAD_DIM;
+        for (; token < page_end; ++token, base += HEAD_DIM) {
+            float score = 0.0f;
+            for (uint i = 0; i < HEAD_DIM / 32; ++i) {
+                score += q[i] * float(keys[base + lane + i * 32]);
+            }
+            score = simd_sum(score) * scale[0];
+            const float next_peak = max(peak, score);
+            const bool new_peak = score > peak;
+            const float weight = fast::exp(-abs(peak - score));
+            const float previous = new_peak ? weight : 1.0f;
+            const float current = new_peak ? 1.0f : weight;
+            total = fma(total, previous, current);
+            peak = next_peak;
+            for (uint i = 0; i < HEAD_DIM / 32; ++i) {
+                weighted[i] = fma(current, float(values[base + lane + i * 32]),
+                                  weighted[i] * previous);
+            }
         }
     }
     const uint index = head * partitions[0] + part;

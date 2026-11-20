@@ -20,8 +20,15 @@ class PagedDecodeTests(unittest.TestCase):
         contiguous_values = mx.take(values, table, axis=1).reshape(1, kv_heads, -1, dim)
         scale = dim**-0.5
 
-        for length in (1, 16, 17, 64, 65, 79):
-            with self.subTest(length=length):
+        for length, partition in (
+            (1, 64),
+            (16, 64),
+            (17, 64),
+            (64, 64),
+            (65, 31),
+            (79, 64),
+        ):
+            with self.subTest(length=length, partition=partition):
                 expected = mx.fast.scaled_dot_product_attention(
                     query,
                     contiguous_keys[:, :, :length, :],
@@ -29,7 +36,13 @@ class PagedDecodeTests(unittest.TestCase):
                     scale=scale,
                 )
                 actual = paged_decode(
-                    query, keys, values, table, length=length, scale=scale, partition=64
+                    query,
+                    keys,
+                    values,
+                    table,
+                    length=length,
+                    scale=scale,
+                    partition=partition,
                 )
                 self.assertTrue(
                     mx.allclose(actual, expected, atol=0.004, rtol=0.01).item()
