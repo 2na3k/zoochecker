@@ -6,7 +6,11 @@ from threading import Lock
 
 from zoochecker.server_args import ServerArgs
 
-from ._base import KVCachePool, RequestKVCache
+from ._base import KVCachePool, KVCacheStats, RequestKVCache
+
+
+class CacheCapacityError(ValueError):
+    pass
 
 
 class CacheFactory:
@@ -42,6 +46,12 @@ class CacheManager:
         self._active: dict[RequestKVCache, int] = {}
         self._lock = Lock()
 
+    def stats(self) -> KVCacheStats:
+        with self._lock:
+            if self._pool is None:
+                raise RuntimeError("KV cache manager is closed")
+            return self._pool.stats()
+
     def allocate(self) -> RequestKVCache:
         with self._lock:
             if self._pool is None:
@@ -70,7 +80,7 @@ class CacheManager:
         cache = self.allocate()
         try:
             if prompt_tokens > cache.capacity:
-                raise ValueError("Prompt exceeds KV cache capacity")
+                raise CacheCapacityError("Prompt exceeds KV cache capacity")
             yield cache
         finally:
             with self._lock:

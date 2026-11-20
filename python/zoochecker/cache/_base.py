@@ -12,6 +12,17 @@ class KVPrefix:
     layers: tuple[tuple[mx.array, mx.array], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class KVCacheStats:
+    slots_total: int
+    slots_used: int
+    blocks_total: int
+    blocks_used: int
+    block_tokens: int
+    bytes_total: int
+    bytes_used: int
+
+
 class RequestKVCache(ABC):
     @property
     @abstractmethod
@@ -53,6 +64,10 @@ class KVCachePool(ABC):
     @property
     @abstractmethod
     def capacity(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def stats(self) -> KVCacheStats:
         raise NotImplementedError
 
     @abstractmethod

@@ -7,7 +7,7 @@ import mlx.core as mx
 
 from zoochecker.server_args import ServerArgs
 
-from ._base import KVCachePool, KVPrefix, RequestKVCache
+from ._base import KVCachePool, KVCacheStats, KVPrefix, RequestKVCache
 from .utils import compact_snapshot
 
 
@@ -199,6 +199,7 @@ class MLXPagedKVCachePool(KVCachePool):
             raise RuntimeError("The mlx_paged_kv cache pool requires an MLX Metal GPU")
 
         self.dtype = dtypes[args.cache_dtype]
+        self._bytes_per_layer_token = 2 * num_kv_heads * head_dim * self.dtype.size
         self.max_tokens = args.cache_max_tokens
         self._block_tokens = args.cache_block_tokens
         self.num_layers = num_layers
@@ -222,6 +223,25 @@ class MLXPagedKVCachePool(KVCachePool):
     @property
     def block_tokens(self) -> int:
         return self._block_tokens
+
+    def stats(self) -> KVCacheStats:
+        with self._slot_lock, self._block_lock:
+            blocks = self.capacity * self._blocks_for(self.max_tokens)
+            tokens = sum(
+                length for lease in self._leased.values() for length in lease._offsets
+            )
+            return KVCacheStats(
+                slots_total=self.capacity,
+                slots_used=len(self._leased),
+                blocks_total=blocks,
+                blocks_used=blocks - len(self._free_blocks),
+                block_tokens=self.block_tokens,
+                bytes_total=blocks
+                * self.block_tokens
+                * self.num_layers
+                * self._bytes_per_layer_token,
+                bytes_used=tokens * self._bytes_per_layer_token,
+            )
 
     def _blocks_for(self, tokens: int) -> int:
         return (tokens + self.block_tokens - 1) // self.block_tokens

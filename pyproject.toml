@@ -9,11 +9,15 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.165.0",
+    "httpx",
     "mlx>=0.32.4",
     "mlx-lm>=0.32.2",
     "mlx-vlm>=0.8.0",
     "pillow>=13.0.0",
+    "prometheus-client",
     "pyzmq>=27.3.0",
+    "safetensors",
+    "uvicorn",
 ]
 
 [tool.uv]

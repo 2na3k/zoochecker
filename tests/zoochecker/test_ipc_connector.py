@@ -4,10 +4,20 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from zoochecker.ipc_connector import create_async_ipc_pair_socket
+from zoochecker.ipc_connector import create_async_ipc_pair_socket, ipc_endpoints
 
 
 class IpcPairSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_allocated_endpoints_are_distinct_and_cleaned_up(self) -> None:
+        with ipc_endpoints() as (tokenizer, worker), ipc_endpoints() as other:
+            self.assertNotEqual(tokenizer, worker)
+            self.assertNotEqual(tokenizer.parent, other[0].parent)
+            self.assertEqual(tokenizer.parent.stat().st_mode & 0o777, 0o700)
+            await self._assert_round_trip(tokenizer)
+            await self._assert_round_trip(worker)
+        self.assertFalse(tokenizer.parent.exists())
+        self.assertFalse(other[0].parent.exists())
+
     async def _assert_round_trip(self, endpoint: str | Path) -> None:
         with (
             closing(create_async_ipc_pair_socket(endpoint, bind=True)) as server,

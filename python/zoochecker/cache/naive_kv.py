@@ -5,7 +5,7 @@ import mlx.core as mx
 
 from zoochecker.server_args import ServerArgs
 
-from ._base import KVCachePool, KVPrefix, RequestKVCache
+from ._base import KVCachePool, KVCacheStats, KVPrefix, RequestKVCache
 from .utils import compact_snapshot
 
 
@@ -158,6 +158,9 @@ class MLXKVCachePool(KVCachePool):
             raise RuntimeError("The mlx_kv cache pool requires an MLX Metal GPU")
 
         dtype = dtypes[args.cache_dtype]
+        self._bytes_per_layer_token = 2 * num_kv_heads * head_dim * dtype.size
+        self._max_tokens = args.cache_max_tokens
+        self._num_layers = num_layers
         shape = (1, num_kv_heads, args.cache_max_tokens, head_dim)
         self._slots = tuple(
             tuple(
@@ -183,6 +186,25 @@ class MLXKVCachePool(KVCachePool):
     @property
     def capacity(self) -> int:
         return len(self._slots)
+
+    def stats(self) -> KVCacheStats:
+        with self._lock:
+            used = len(self._leased)
+            tokens = sum(
+                layer.length for slot in self._leased for layer in self._slots[slot]
+            )
+            return KVCacheStats(
+                slots_total=self.capacity,
+                slots_used=used,
+                blocks_total=self.capacity,
+                blocks_used=used,
+                block_tokens=self._max_tokens,
+                bytes_total=self.capacity
+                * self._max_tokens
+                * self._num_layers
+                * self._bytes_per_layer_token,
+                bytes_used=tokens * self._bytes_per_layer_token,
+            )
 
     def lease(self, slot: int) -> MLXRequestKVCache:
         with self._lock:
