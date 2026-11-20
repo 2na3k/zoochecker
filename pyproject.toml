@@ -1,7 +1,7 @@
 [project]
 name = "zoochecker"
 version = "0.1.0"
-description = "Add your description here"
+description = "not your zookeeper but the model zoo"
 readme = "README.md"
 authors = [
     { name = "fisherman", email = "57496995+2na3k@users.noreply.github.com" }
@@ -13,6 +13,7 @@ dependencies = [
     "mlx-lm>=0.32.2",
     "mlx-vlm>=0.8.0",
     "pillow>=13.0.0",
+    "pyzmq>=27.3.0",
 ]
 
 [tool.uv]
