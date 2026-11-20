@@ -171,15 +171,30 @@ class KVCacheTests(unittest.TestCase):
 @unittest.skipUnless(mx.metal.is_available(), "requires MLX Metal")
 class CacheBackendTests(unittest.TestCase):
     def test_block_reads_expose_only_written_tokens(self):
-        for pool_type, widths in (("mlx_kv", [35]), ("mlx_paged_kv", [16, 16, 3])):
-            with self.subTest(pool_type=pool_type):
-                args = ServerArgs("test", None, cache_pool_type=pool_type, cache_max_tokens=48)
+        for pool_type, block_tokens, widths in (
+            ("mlx_kv", 16, [35]),
+            ("mlx_paged_kv", 16, [16, 16, 3]),
+            ("mlx_paged_kv", 12, [12, 12, 11]),
+        ):
+            with self.subTest(pool_type=pool_type, block_tokens=block_tokens):
+                args = ServerArgs(
+                    "test",
+                    None,
+                    cache_pool_type=pool_type,
+                    cache_max_tokens=48,
+                    cache_block_tokens=block_tokens,
+                )
                 manager = CacheManager(CacheFactory.create_pool(args, **GEOMETRY))
                 try:
                     with manager.request_cache() as cache:
                         self.assertEqual(cache.blocks(0), ())
-                        keys = mx.arange(2 * 35 * 4).reshape(1, 2, 35, 4).astype(mx.float32)
-                        cache.append(0, keys, -keys)
+                        keys = (
+                            mx.arange(2 * 35 * 4)
+                            .reshape(1, 2, 35, 4)
+                            .astype(mx.float32)
+                        )
+                        cache.append(0, keys[:, :, :5], -keys[:, :, :5])
+                        cache.append(0, keys[:, :, 5:], -keys[:, :, 5:])
                         chunks = cache.blocks(0)
                         self.assertEqual([k.shape[2] for k, _ in chunks], widths)
                         start = 0
