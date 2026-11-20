@@ -15,3 +15,5 @@ class ServerArgs:
     cache_max_tokens: int = 2048
     cache_block_tokens: int = 16
     cache_decode_partition_tokens: int = 64
+
+    tokenizer_ipc_endpoint: str | None = None

@@ -2,22 +2,12 @@
 
 from pathlib import Path
 
-import zmq
+import zmq.asyncio
 
-def create_ipc_pair_socket(
-    endpoint: str | Path,
-    *,
-    bind: bool,
-    context: zmq.Context | None = None,
-    linger_ms: int = 0,
-) -> zmq.Socket:
-    """Create a full-duplex PAIR socket at a local IPC endpoint.
 
-    Exactly one peer should bind and the other should connect. Pass the same
-    endpoint to both processes, e.g. ``/tmp/zoochecker.sock`` or
-    ``ipc:///tmp/zoochecker.sock``. Messages are transient; this is not a
-    durable queue.
-    """
+def create_async_ipc_pair_socket(
+    endpoint: str | Path, *, bind: bool
+) -> zmq.asyncio.Socket:
     if isinstance(endpoint, Path) or "://" not in str(endpoint):
         socket_path = Path(endpoint).expanduser().resolve()
         socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,9 +17,9 @@ def create_ipc_pair_socket(
         if not address.startswith("ipc://"):
             raise ValueError("endpoint must be a filesystem path or ipc:// URL")
 
-    socket = (context or zmq.Context.instance()).socket(zmq.PAIR)
-    socket.setsockopt(zmq.LINGER, linger_ms)
+    socket = zmq.asyncio.Context.instance().socket(zmq.PAIR)
     try:
+        socket.setsockopt(zmq.LINGER, 0)
         if bind:
             socket.bind(address)
         else:

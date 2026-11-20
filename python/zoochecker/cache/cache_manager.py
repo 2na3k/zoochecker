@@ -66,9 +66,11 @@ class CacheManager:
         self._free_slots.append(self._active.pop(cache))
 
     @contextmanager
-    def request_cache(self) -> Iterator[RequestKVCache]:
+    def request_cache(self, *, prompt_tokens: int = 0) -> Iterator[RequestKVCache]:
         cache = self.allocate()
         try:
+            if prompt_tokens > cache.capacity:
+                raise ValueError("Prompt exceeds KV cache capacity")
             yield cache
         finally:
             with self._lock:
